@@ -7,8 +7,9 @@ import { Package, DollarSign, TrendingUp, ShoppingCart } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Link, useLocation } from 'react-router-dom';
 import { useAuth } from '@/contexts/AuthContext';
-import { Product } from '@/types';
+import { Product, Sale } from '@/types';
 import { loadStoredProducts, saveStoredProducts } from '@/lib/product-storage';
+import { loadStoredSales, saveStoredSales } from '@/lib/sales-storage';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
@@ -26,6 +27,7 @@ export default function ClientDashboard() {
   const isSalesPage = location.pathname === '/client/sales';
 
   const [products, setProducts] = useState<Product[]>([]);
+  const [sales, setSales] = useState<Sale[]>([]);
   const [productSearch, setProductSearch] = useState('');
   const [saleProductId, setSaleProductId] = useState('');
   const [saleQuantity, setSaleQuantity] = useState<number>(1);
@@ -43,6 +45,15 @@ export default function ClientDashboard() {
     setProducts(base);
   }, [user?.id]);
 
+  // 🔹 Cargar ventas del usuario (localStorage, con fallback a demo)
+  useEffect(() => {
+    if (!user) return;
+
+    const storedSales = loadStoredSales(user.id);
+    const baseSales = storedSales.length > 0 ? storedSales : mockSales;
+    setSales(baseSales);
+  }, [user?.id]);
+
   // 🔹 Persistir productos del usuario
   const persistProducts = (next: Product[]) => {
     if (!user) return;
@@ -50,23 +61,64 @@ export default function ClientDashboard() {
     saveStoredProducts(user.id, next);
   };
 
-  // 🔹 Métricas basadas en productos reales
+  // 🔹 Persistir ventas del usuario
+  const persistSales = (next: Sale[]) => {
+    if (!user) return;
+    setSales(next);
+    saveStoredSales(user.id, next);
+  };
+
+  // 🔹 Métricas basadas en productos
   const totalProducts = products.length;
   const activeProducts = products.filter((p) => p.stock > 0).length;
 
-  // 🔹 Ventas (por ahora siguen siendo datos demo)
-  const totalSales = mockSales.reduce(
+  // 🔹 Ventas (totales + semana) basadas en ventas reales
+  const totalSales = sales.reduce(
     (sum, sale) => sum + sale.total_amount,
     0,
   );
-  const weekSales = mockSales
-    .filter((sale) => {
-      const saleDate = new Date(sale.created_at);
-      const weekAgo = new Date();
-      weekAgo.setDate(weekAgo.getDate() - 7);
-      return saleDate >= weekAgo;
-    })
-    .reduce((sum, sale) => sum + sale.total_amount, 0);
+
+  const weekAgo = new Date();
+  weekAgo.setDate(weekAgo.getDate() - 7);
+
+  const weeklySales = sales.filter((sale) => {
+    const saleDate = new Date(sale.created_at);
+    return saleDate >= weekAgo;
+  });
+
+  const weekSales = weeklySales.reduce(
+    (sum, sale) => sum + sale.total_amount,
+    0,
+  );
+
+  // 🔹 Datos del gráfico: agregamos por día de la semana
+  const dayTotals: Record<number, number> = {
+    0: 0, // Dom
+    1: 0, // Lun
+    2: 0, // Mar
+    3: 0, // Mié
+    4: 0, // Jue
+    5: 0, // Vie
+    6: 0, // Sáb
+  };
+
+  weeklySales.forEach((sale) => {
+    const d = new Date(sale.created_at).getDay(); // 0 (Dom) - 6 (Sáb)
+    dayTotals[d] += sale.total_amount;
+  });
+
+  const dynamicChartData = [
+    { name: 'Lun', ventas: dayTotals[1] },
+    { name: 'Mar', ventas: dayTotals[2] },
+    { name: 'Mié', ventas: dayTotals[3] },
+    { name: 'Jue', ventas: dayTotals[4] },
+    { name: 'Vie', ventas: dayTotals[5] },
+    { name: 'Sáb', ventas: dayTotals[6] },
+    { name: 'Dom', ventas: dayTotals[0] },
+  ];
+
+  const hasRealChartData = dynamicChartData.some((d) => d.ventas > 0);
+  const chartData = hasRealChartData ? dynamicChartData : salesChartData;
 
   const formatCurrency = (value: number) => {
     return new Intl.NumberFormat('es-MX', {
@@ -80,7 +132,7 @@ export default function ClientDashboard() {
     product.name.toLowerCase().includes(productSearch.toLowerCase()),
   );
 
-  // 🔹 Registrar venta rápida (descuenta stock en tiempo real)
+  // 🔹 Registrar venta rápida (descuenta stock y guarda venta)
   const handleRegisterSale = () => {
     if (!user) {
       toast.error('No se pudo identificar el usuario');
@@ -108,6 +160,7 @@ export default function ClientDashboard() {
       return;
     }
 
+    // Actualizar stock
     const updated: Product = {
       ...product,
       stock: product.stock - saleQuantity,
@@ -117,6 +170,23 @@ export default function ClientDashboard() {
       p.id === product.id ? updated : p,
     );
     persistProducts(nextProducts);
+
+    // Registrar la venta
+    const totalAmount = product.price * saleQuantity;
+
+    const newSale: Sale = {
+      id:
+        typeof crypto !== 'undefined' && 'randomUUID' in crypto
+          ? crypto.randomUUID()
+          : Date.now().toString(),
+      product_id: product.id,
+      quantity: saleQuantity,
+      total_amount: totalAmount,
+      created_at: new Date().toISOString(),
+    };
+
+    const nextSales = [newSale, ...sales];
+    persistSales(nextSales);
 
     setSaleQuantity(1);
 
@@ -170,71 +240,73 @@ export default function ClientDashboard() {
 
         {/* 🔹 Sales Chart: solo en /client/sales */}
         {isSalesPage && (
-          <SalesChart data={salesChartData} title="Ventas de la Semana" />
+          <SalesChart data={chartData} title="Ventas de la Semana" />
         )}
 
-        {/* 🔹 Registrar venta rápida */}
-        <div className="bg-card rounded-xl border border-border/50 p-6">
-          <h3 className="text-lg font-semibold text-foreground mb-4">
-            Registrar venta rápida
-          </h3>
-          <div className="grid gap-4 md:grid-cols-[2fr,1fr,auto]">
-            <div className="space-y-2">
-              <Label htmlFor="product-search">Buscar producto</Label>
-              <Input
-                id="product-search"
-                placeholder="Escribe para filtrar..."
-                value={productSearch}
-                onChange={(e) => setProductSearch(e.target.value)}
-              />
-              <div className="mt-2">
-                <Select
-                  value={saleProductId}
-                  onValueChange={setSaleProductId}
+        {/* 🔹 Registrar venta rápida: solo en /client/sales */}
+        {isSalesPage && (
+          <div className="bg-card rounded-xl border border-border/50 p-6">
+            <h3 className="text-lg font-semibold text-foreground mb-4">
+              Registrar venta rápida
+            </h3>
+            <div className="grid gap-4 md:grid-cols-[2fr,1fr,auto]">
+              <div className="space-y-2">
+                <Label htmlFor="product-search">Buscar producto</Label>
+                <Input
+                  id="product-search"
+                  placeholder="Escribe para filtrar..."
+                  value={productSearch}
+                  onChange={(e) => setProductSearch(e.target.value)}
+                />
+                <div className="mt-2">
+                  <Select
+                    value={saleProductId}
+                    onValueChange={setSaleProductId}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Selecciona un producto" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {filteredProductsForSelect.length === 0 ? (
+                        <div className="px-3 py-2 text-sm text-muted-foreground">
+                          No hay productos que coincidan
+                        </div>
+                      ) : (
+                        filteredProductsForSelect.map((product) => (
+                          <SelectItem key={product.id} value={product.id}>
+                            {product.name} · stock: {product.stock}
+                          </SelectItem>
+                        ))
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+              <div className="space-y-2">
+                <Label htmlFor="quantity">Cantidad</Label>
+                <Input
+                  id="quantity"
+                  type="number"
+                  min={1}
+                  value={saleQuantity}
+                  onChange={(e) => setSaleQuantity(Number(e.target.value))}
+                />
+                <p className="text-xs text-muted-foreground">
+                  Se descontará del stock actual del producto.
+                </p>
+              </div>
+              <div className="flex items-end">
+                <Button
+                  type="button"
+                  onClick={handleRegisterSale}
+                  className="w-full md:w-auto"
                 >
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecciona un producto" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {filteredProductsForSelect.length === 0 ? (
-                      <div className="px-3 py-2 text-sm text-muted-foreground">
-                        No hay productos que coincidan
-                      </div>
-                    ) : (
-                      filteredProductsForSelect.map((product) => (
-                        <SelectItem key={product.id} value={product.id}>
-                          {product.name} · stock: {product.stock}
-                        </SelectItem>
-                      ))
-                    )}
-                  </SelectContent>
-                </Select>
+                  Registrar venta
+                </Button>
               </div>
             </div>
-            <div className="space-y-2">
-              <Label htmlFor="quantity">Cantidad</Label>
-              <Input
-                id="quantity"
-                type="number"
-                min={1}
-                value={saleQuantity}
-                onChange={(e) => setSaleQuantity(Number(e.target.value))}
-              />
-              <p className="text-xs text-muted-foreground">
-                Se descontará del stock actual del producto.
-              </p>
-            </div>
-            <div className="flex items-end">
-              <Button
-                type="button"
-                onClick={handleRegisterSale}
-                className="w-full md:w-auto"
-              >
-                Registrar venta
-              </Button>
-            </div>
           </div>
-        </div>
+        )}
 
         {/* 🔹 Top Products */}
         <div className="bg-card rounded-xl border border-border/50 p-6">

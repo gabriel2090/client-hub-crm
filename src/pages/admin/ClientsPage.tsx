@@ -311,7 +311,7 @@ export default function ClientsPage() {
                 onClick={handleDeleteClient}
                 className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
               >
-                <Eliminarr></Eliminarr>
+                Eliminar
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
